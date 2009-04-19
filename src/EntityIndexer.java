@@ -57,19 +57,30 @@ public class EntityIndexer{
    private TopicDetector topicDetector;
    private Disambiguator disambiguator;
    private TextProcessor tp;
+   private AbstractSequenceClassifier classifier;
 
-   public EntityIndexer(String url, String user, String password, String server, String repoId)
+   public EntityIndexer(String url, String user, String password, String server, String repoId, 
+         AbstractSequenceClassifier asc)
    {
       repo = new HTTPRepository(server,repoId);
       repo.initialize();
       RepositoryConnection rc = repo.getRepositoryConnection();
       ValueFactory vf = rc.getValueFactory();
+
       SOMETHING_URI = vf.createURI("SOMETHING");
       ISVALIDURI =  vf.createURI("ISVALID");
+      ARTICLEURI = vf.createURI("NEWSARTICLE");
+      PERSONURI = vf.createURI("PERSON");
+      ORGANIZATIONURI = vf.createURI("ORGANIZATION");
+      LOCATIONURI = vf.createURI("LOCATION");
+      APPEARSINURI = vf.createURI("APPEARSIN");
+
       SUBCLASSOF = vf.createURI(RDFS.SUBCLASSOF);
       CLASS = vf.createURI(RDFS.CLASS);
       LABEL = vf.createURI(RDFS.LABEL);
       TYPE = vf.createURI(RDF.TYPE);
+      PROPERTY = vf.createURI(RDF.PROPERTY);
+      
 
       wikipedia = new Wikipedia(WIKIPEDIA_DBSERVER, WIKIPEDIA_DB, 
             WIKIPEDIA_DBUSER, WIKIPEDIA_DBPASS);
@@ -79,11 +90,20 @@ public class EntityIndexer{
       topicDetector = new TopicDetector(wikipedia, disambiguator, null, 
             new SortedVector<RegionTag>(), false);
 
+      /* SOMETHING IS A CLASS */
       conn.add(SOMETHINGURI, TYPE, CLASS);
+      /* PERSON IS A SUBCLASS OF SOMETHING */
       conn.add(PERSONURI, SUBCLASSOF, SOMETHINGURI);
+      /* ORGANIZATION IS A SUBCLASS OF SOMETHING */
       conn.add(ORGANIZATIONURI, SUBCLASSOF, SOMETHINGURI);
+      /* LOCATION IS A SUBCLASS OF SOMETHING */
       conn.add(LOCATIONURI, SUBCLASSOF, SOMETHINGURI);
+      /* ARTICLE IS A SUBCLSAS OF SOMETHING */
       conn.add(ARTICLEURI, SUBCLASSOF, SOMETHINGURI);
+      /* APPEARS IN IS A PROPERTY */
+      conn.add(APPEARSIN, TYPE, PROPERTY);
+
+      classifier = asc;
 
    }
 
@@ -118,7 +138,7 @@ public class EntityIndexer{
    private void buildEntities(String article, String article_uri, String article_title)
    {
       SortedVector<Topic> topics = disambiguate(article);
-      SortedVector<NEREntity> finalTopics = intersecttopicsWithNER(article, topics);
+      Vector<NEREntity> finalTopics = intersectWithNER(article, topics);
       RepositoryConnection conn = repo.getRepositoryConnection(); 
       URI articleURI = conn.getValueFactory().createURI(article_uri);
       Literal articleTitle = conn.getValueFactory().createLiteral(articleTitle);
@@ -134,9 +154,88 @@ public class EntityIndexer{
 
    }
 
-   private SortedVector<NEREntity> intersectWithNER(String article, SortedVector<Topic> topics)
+   private Vector<NEREntity> intersectWithNER(String article, SortedVector<Topic> topics)
    {
+      List<List<CoreLabel>> documents = classifier.classify(article);
+      SortedVector<TopicReference> references = resolveCollisions(topics);
+      HashMap<Integer,Topic> topicsById = new HashMap<Integer, Topic>();
+      HashMap<Integer,NEREntity> entitiesByIndex = new HashMap<Integer,NEREntity>();
+      HashSet<Integer> doneTopics = new HashSet<Integer>();
+      Vector<NEREntity> intersection = new SortedVector<NEREntity>();
 
+      for (Topic topic: topics) 
+			topicsById.put(topic.getId(), topic) ;
+
+      for(List<CoreLabel> doc:documents){
+         for(CoreLabel classified:doc){
+            String word = classified.word();
+            String type = classified.getString(AnswerAnnotation.class);
+            int index = article.indexOf(word,classified.index());
+            
+            if(index != classified.index())
+               throw new RuntimeException("index="+index+" classified.index()="+classified.index());
+
+            NEREntity entity = new NEREntity(word,type,index,null);
+            entitiesByIndex.put(index,entity);
+         }
+      }
+
+      for(TopicReference ref:references){
+         int start = ref.getPosition().getStart();
+         int end = ref.getPosition().getEnd();
+         int id  = ref.getTopicId();
+         
+         if(doneTopics.contains(id))
+            continue;
+
+         Topic t = topicsById.get(id);
+         NEREntity entity = entitiesByIndex.get(start);
+         if(entity == null)
+            throw new RuntimeException("Cannot find entity at index " + start + ":" + t);
+
+         doneTopics.add(id);
+         entity.topic = t;
+         intersection.add(entity);
+
+      }
+      return intersection;
+   }
+
+   private Vector<TopicReference> resolveCollisions(Collection<Topic> topics) {
+
+      HashMap<Integer, Double> topicWeights = new HashMap<Integer, Double>() ;
+
+      TreeSet<TopicReference> temp = new TreeSet<TopicReference>() ;
+
+      for(Topic topic: topics) {	
+         for (Position pos: topic.getPositions()) {
+            topicWeights.put(topic.getId(), topic.getWeight()) ;
+
+            TopicReference tr = new TopicReference(null, topic.getId(), pos) ;
+            temp.add(tr) ;
+         }
+      }
+
+      Vector<TopicReference> references = new Vector<TopicReference>() ;
+      references.addAll(temp) ;
+
+      for (int i=0 ; i<references.size(); i++) {
+         TopicReference reference = references.elementAt(i) ;
+
+         Vector<TopicReference> overlappedTopics = new Vector<TopicReference>() ;
+
+         for (int j=i+1 ; j<references.size(); j++){
+            TopicReference reference2 = references.elementAt(j) ;
+
+            if (reference.overlaps(reference2)) 
+               overlappedTopics.add(reference2) ;
+         }
+
+         for (int j=0 ; j<overlappedTopics.size() ; j++) {
+            references.removeElementAt(i+1) ;
+         }
+      }
+      return references;
    }
 
    private void buildRDF(String uri, String label, Article article, URI newsArtURI, InfoBox ibox, int entityType,
@@ -229,15 +328,31 @@ public class EntityIndexer{
 
    }
 
-   public Vector 
-
    public static class NEREntity
    {
       public static final int PERSON = 1;
       public static final int PLACE = 2;
       public static final int ORGANIZATION = 3;
-
+      
       public Topic topic;
       public int type;
+      public int start;
+      public String word;
+
+
+      public NEREntity(String word, String type, int start, Topic topic)
+      {
+         this.word = word;
+         if(type == "ORGANIZATION"){
+            this.type = NEREntity.ORGANIZATION;
+         }else if(type == "PERSON"){
+            this.type = NEREntity.PERSON;
+         }else if(type == "LOCATION"){
+            this.type = NEREntity.PLACE;
+         }else
+            throw new RuntimeException("Got " + type);
+         this.start = start;
+         this.topic = topic;
+      }
    }
 }
