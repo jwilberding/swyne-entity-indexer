@@ -3,8 +3,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import java.util.SortedVector ;
-import java.util.Vector ;
+import java.util.Vector;
+import java.util.regex.*;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -318,6 +318,11 @@ public class EntityIndexer{
 
    private InfoBox buildInfoBox(Article article)
    {
+      String infobox_regex = "\\{\\{Infobox [^(}})*";
+     // String 
+      Pattern infobox_pattern = Pattern.compile(regex, MULTILINE);
+      Matcher matches = infobox_pattern.matcher(article.getContent());
+
 
    }
 
