@@ -6,15 +6,6 @@ import java.util.List;
 import java.util.Vector;
 import java.util.regex.*;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
-
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
-import org.xml.sax.SAXException;
-
 import org.openrdf.model.*;
 import org.openrdf.util.jdbc.*;
 import org.openrdf.repository.*;
